@@ -1,0 +1,10 @@
+pip install "numpy<2" --only-binary :all:
+pip install nibabel nilearn scipy pandas matplotlib
+
+
+#nibabel>=5.2
+#nilearn>=0.10
+#numpy>=1.26
+#scipy>=1.12
+#pandas>=2.2
+#matplotlib>=3.8
