@@ -1446,6 +1446,7 @@ sub registerScanIntoDB {
         my $acquisition_date =
             $${minc_file}->getParameter('acquisition_date')
             || $study_start_date
+            || $${minc_file}->getParameter('study:start_date')
             || undef;
 
         print "Acquisition date: " . $acquisition_date . "\n";
