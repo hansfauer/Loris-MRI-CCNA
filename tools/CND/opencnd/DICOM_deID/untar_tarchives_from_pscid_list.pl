@@ -37,7 +37,7 @@ Reads PSCIDs from a CSV, looks up matching DICOM archives in the database via:
     SELECT c.PSCID, t.PatientName, t.ArchiveLocation, t.DateAcquired, s.Visit_label
     FROM tarchive t
     JOIN session s ON (s.ID = t.SessionID)
-    JOIN candidate c ON (c.CandID = s.CandID)
+    JOIN candidate c ON (c.ID = s.CandidateID)
     WHERE c.PSCID IN (...)
       AND t.PatientName LIKE '%Initial_MRI%'
 
@@ -192,7 +192,7 @@ my $query = <<"SQL";
 SELECT c.PSCID, t.PatientName, t.ArchiveLocation, t.DateAcquired, s.Visit_label
 FROM tarchive t
 JOIN session s ON (s.ID = t.SessionID)
-JOIN candidate c ON (c.CandID = s.CandID)
+JOIN candidate c ON (c.ID = s.CandidateID)
 WHERE c.PSCID IN ($placeholders)
   AND t.PatientName LIKE '%Initial_MRI%'
 ORDER BY c.PSCID, t.DateAcquired, t.ArchiveLocation
