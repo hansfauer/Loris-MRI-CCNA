@@ -5,19 +5,26 @@ generate_dicat_csv.py
 Build a headerless CSV for DICAT mass de-identification from untarred DICOM
 archives produced by untar_tarchives_from_pscid_list.pl.
 
-Each output row (no header) is:
+Each output row (no header) holds one column per editable field of
+fields_to_zap_for_open_CCNA.xml, in this order:
 
-    <DICOM_DIR>,<new_PatientName>,<new_PatientID>,<PatientBirthDate>,<DateAcquired>
+    <DICOM_DIR>,<new_PatientName>,<new_PatientID>,<PatientBirthDate>,
+    <DateAcquired>,<StudyDate>,<SeriesDate>,<AcquisitionDate>,<ContentDate>,
+    <PerformedProcedureStepStartDate>,<AcquisitionDateTime>,
+    <PerformedProcedureStepEndDate>
 
 where:
     - DICOM_DIR         : path to the untarred DICOM study directory
     - new_PatientName   : open_PSCID_open_CandID_Time_1_MRI for Initial_MRI;
-                                                 otherwise open_PSCID_open_CandID_<Visit_label>
+                          otherwise open_PSCID_open_CandID_<Visit_label>
     - new_PatientID     : open_PSCID
     - PatientBirthDate  : original DoB truncated to YYYYMM01
     - DateAcquired      : acquisition date truncated to YYYYMM01
+    - every other column: the most common value across the sampled DICOM files,
+                          truncated to YYYYMM01, or empty when the tag is absent.
+                          AcquisitionDateTime keeps its original time portion.
 
-Intended use with DICAT and fields_to_zap_for_open_science XML, e.g.:
+Intended use with DICAT
 
     python mass_deidentify.py \\
       -c dicat_batch.csv \\
@@ -45,6 +52,7 @@ import importlib.util
 import os
 import re
 import sys
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -52,6 +60,21 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OPEN_IDS = SCRIPT_DIR / "openIDs_CND.csv"
 DEFAULT_SUMMARY_NAME = "untar_tarchives_summary.tsv"
+
+# Editable fields of fields_to_zap_for_open_CCNA.xml that are not already
+# covered by the patient/acquisition columns, in XML order.
+EXTRA_DATE_COLUMNS = (
+    "StudyDate",
+    "SeriesDate",
+    "AcquisitionDate",
+    "ContentDate",
+    "PerformedProcedureStepStartDate",
+    "AcquisitionDateTime",
+    "PerformedProcedureStepEndDate",
+)
+
+SAMPLED_KEYWORDS = EXTRA_DATE_COLUMNS + ("PatientBirthDate",)
+SAMPLE_FILE_LIMIT = 25
 
 
 def parse_args():
@@ -178,6 +201,15 @@ def to_yyyymm01(value: str | None) -> str:
         return f"{m.group(1)}{int(m.group(2)):02d}01"
 
     return ""
+
+
+def to_dt_yyyymm01(value: str | None) -> str:
+    """Truncate a DICOM DT value to YYYYMM01 while keeping its time portion."""
+    raw = str(value or "").strip()
+    date_part = to_yyyymm01(raw[:8])
+    if not date_part:
+        return ""
+    return date_part + raw[8:]
 
 
 def is_dicom_file(path: Path) -> bool:
@@ -325,24 +357,40 @@ def load_dobs_from_db(db, pscids: list[str]) -> dict[str, str]:
     return out
 
 
-def read_dob_from_dicom(dicom_dir: Path) -> str:
-    """Read PatientBirthDate from the first DICOM in dicom_dir."""
+def read_study_dicom_values(dicom_dir: Path) -> dict[str, str]:
+    """Return the most common non-empty value of each sampled tag in a study."""
     try:
         import pydicom
     except ImportError:
-        return ""
+        return {}
 
+    paths: list[Path] = []
     for root, _dirs, files in os.walk(dicom_dir):
-        for name in files:
-            path = Path(root) / name
-            if not is_dicom_file(path):
-                continue
-            try:
-                ds = pydicom.dcmread(str(path), stop_before_pixels=True)
-                return str(getattr(ds, "PatientBirthDate", "") or "")
-            except Exception:
-                continue
-    return ""
+        paths.extend(Path(root) / name for name in files)
+    if not paths:
+        return {}
+    paths.sort()
+
+    # Spread the sample so a single leading series cannot decide a column.
+    step = max(1, len(paths) // SAMPLE_FILE_LIMIT)
+    counters: dict[str, Counter[str]] = defaultdict(Counter)
+    reads = 0
+    for path in paths[::step]:
+        if reads >= SAMPLE_FILE_LIMIT:
+            break
+        if not is_dicom_file(path):
+            continue
+        try:
+            dataset = pydicom.dcmread(str(path), stop_before_pixels=True)
+        except Exception:
+            continue
+        reads += 1
+        for keyword in SAMPLED_KEYWORDS:
+            value = str(getattr(dataset, keyword, "") or "")
+            if value:
+                counters[keyword][value] += 1
+
+    return {kw: counter.most_common(1)[0][0] for kw, counter in counters.items()}
 
 
 def usable_summary_row(row: dict[str, str]) -> bool:
@@ -439,33 +487,24 @@ def main():
                 warnings.append(f"{pscid}: no DICOM dir under {extract_dir}")
                 continue
 
+            tag_values = read_study_dicom_values(dicom_dir)
+
             dob_raw = dob_by_pscid.get(pscid, "")
             if not dob_raw:
-                dob_raw = read_dob_from_dicom(dicom_dir)
+                dob_raw = tag_values.get("PatientBirthDate", "")
 
             dob_yyyymm01 = to_yyyymm01(dob_raw)
             acq_yyyymm01 = to_yyyymm01(date_acq)
             if not acq_yyyymm01:
-                # Fallback: StudyDate from DICOM if summary date missing
-                try:
-                    import pydicom
+                acq_yyyymm01 = to_yyyymm01(tag_values.get("StudyDate", ""))
 
-                    for root, _dirs, files in os.walk(dicom_dir):
-                        for name in files:
-                            path = Path(root) / name
-                            if not is_dicom_file(path):
-                                continue
-                            ds = pydicom.dcmread(
-                                str(path), stop_before_pixels=True
-                            )
-                            acq_yyyymm01 = to_yyyymm01(
-                                str(getattr(ds, "StudyDate", "") or "")
-                            )
-                            break
-                        if acq_yyyymm01:
-                            break
-                except Exception:
-                    pass
+            extra_dates: list[str] = []
+            for keyword in EXTRA_DATE_COLUMNS:
+                raw = tag_values.get(keyword, "")
+                if keyword == "AcquisitionDateTime":
+                    extra_dates.append(to_dt_yyyymm01(raw))
+                else:
+                    extra_dates.append(to_yyyymm01(raw))
 
             if not dob_yyyymm01:
                 warnings.append(f"{pscid}: missing/unparseable DoB")
@@ -479,13 +518,15 @@ def main():
                     new_patient_id,
                     dob_yyyymm01,
                     acq_yyyymm01,
+                    *extra_dates,
                 ]
             )
             written += 1
             if args.verbose:
                 print(
                     f"{pscid} -> {dicom_dir} | {new_patient_name} | "
-                    f"{new_patient_id} | {dob_yyyymm01} | {acq_yyyymm01}",
+                    f"{new_patient_id} | {dob_yyyymm01} | {acq_yyyymm01} | "
+                    + " | ".join(extra_dates),
                     file=sys.stderr,
                 )
 
