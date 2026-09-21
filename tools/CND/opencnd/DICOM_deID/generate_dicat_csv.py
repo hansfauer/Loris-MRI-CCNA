@@ -10,11 +10,12 @@ Each output row (no header) is:
     <DICOM_DIR>,<new_PatientName>,<new_PatientID>,<PatientBirthDate>,<DateAcquired>
 
 where:
-  - DICOM_DIR         : path to the untarred DICOM study directory
-  - new_PatientName   : open_PSCID_open_CandID_<Visit_label>
-  - new_PatientID     : open_PSCID
-  - PatientBirthDate  : original DoB truncated to MM/YYYY
-  - DateAcquired      : acquisition date truncated to MM/YYYY
+    - DICOM_DIR         : path to the untarred DICOM study directory
+    - new_PatientName   : open_PSCID_open_CandID_Time_1_MRI for Initial_MRI;
+                                                 otherwise open_PSCID_open_CandID_<Visit_label>
+    - new_PatientID     : open_PSCID
+    - PatientBirthDate  : original DoB truncated to YYYYMM01
+    - DateAcquired      : acquisition date truncated to YYYYMM01
 
 Intended use with DICAT and fields_to_zap_for_open_science XML, e.g.:
 
@@ -141,8 +142,8 @@ def load_summary(path: str) -> list[dict[str, str]]:
     return rows
 
 
-def to_mm_yyyy(value: str | None) -> str:
-    """Convert common date strings to MM/YYYY; return '' if unparseable."""
+def to_yyyymm01(value: str | None) -> str:
+    """Convert common date strings to YYYYMM01; return '' if unparseable."""
     if value is None:
         return ""
     s = str(value).strip()
@@ -152,7 +153,7 @@ def to_mm_yyyy(value: str | None) -> str:
     # Already MM/YYYY
     m = re.fullmatch(r"(\d{1,2})/(\d{4})", s)
     if m:
-        return f"{int(m.group(1)):02d}/{m.group(2)}"
+        return f"{m.group(2)}{int(m.group(1)):02d}01"
 
     candidates = [
         "%Y-%m-%d",
@@ -167,14 +168,14 @@ def to_mm_yyyy(value: str | None) -> str:
     for fmt in candidates:
         try:
             dt = datetime.strptime(date_part if "%H" not in fmt else s, fmt)
-            return f"{dt.month:02d}/{dt.year}"
+            return f"{dt.year}{dt.month:02d}01"
         except ValueError:
             continue
 
     # YYYY-MM or YYYY/MM
     m = re.fullmatch(r"(\d{4})[-/](\d{1,2})", s)
     if m:
-        return f"{int(m.group(2)):02d}/{m.group(1)}"
+        return f"{m.group(1)}{int(m.group(2)):02d}01"
 
     return ""
 
@@ -218,6 +219,46 @@ def find_dicom_dir(extract_dir: Path, inner_tar: str) -> Path | None:
     return None
 
 
+def db_config_value(config, *names: str, default=None):
+    for name in names:
+        if isinstance(config, dict) and name in config:
+            return config[name]
+        if hasattr(config, name):
+            return getattr(config, name)
+    return default
+
+
+class SimpleMySQLDatabase:
+    def __init__(self, config):
+        self.config = config
+        self.connection = None
+
+    def connect(self):
+        import MySQLdb
+        import MySQLdb.cursors
+
+        port = db_config_value(self.config, "port", default=3306)
+        self.connection = MySQLdb.connect(
+            host=db_config_value(self.config, "host"),
+            user=db_config_value(self.config, "username", "user"),
+            passwd=db_config_value(self.config, "passwd", "password"),
+            db=db_config_value(self.config, "database", "db"),
+            port=int(port) if str(port).strip() else 3306,
+            cursorclass=MySQLdb.cursors.DictCursor,
+        )
+
+    def pselect(self, query, args=()):
+        if self.connection is None:
+            raise RuntimeError("database is not connected")
+        with self.connection.cursor() as cursor:
+            cursor.execute(query, args)
+            return list(cursor.fetchall())
+
+    def disconnect(self):
+        if self.connection is not None:
+            self.connection.close()
+
+
 def connect_db(profile_name: str):
     """Load $LORIS_CONFIG/.loris_mri/<profile>.py and return a Database."""
     if "LORIS_CONFIG" not in os.environ:
@@ -233,8 +274,17 @@ def connect_db(profile_name: str):
     if not profile_path.is_file():
         sys.exit(f"ERROR: profile not found: {profile_path}")
 
-    # Ensure LORIS-MRI python libs are importable
-    mri_python = Path(__file__).resolve().parents[3] / "python"
+    # Ensure LORIS-MRI python libs are importable.
+    mri_python = next(
+        (
+            parent / "python"
+            for parent in Path(__file__).resolve().parents
+            if (parent / "python" / "lib" / "database.py").is_file()
+        ),
+        None,
+    )
+    if mri_python is None:
+        sys.exit("ERROR: could not locate LORIS-MRI python library directory")
     if str(mri_python) not in sys.path:
         sys.path.insert(0, str(mri_python))
 
@@ -247,9 +297,12 @@ def connect_db(profile_name: str):
     if not hasattr(config, "mysql"):
         sys.exit(f"ERROR: no mysql credentials in {profile_path}")
 
-    from lib.database import Database
+    try:
+        from lib.database import Database
 
-    db = Database(config.mysql, False)
+        db = Database(config.mysql, False)
+    except ModuleNotFoundError:
+        db = SimpleMySQLDatabase(config.mysql)
     db.connect()
     return db
 
@@ -374,7 +427,8 @@ def main():
                 continue
 
             open_pscid, open_candid = open_map[pscid]
-            new_patient_name = f"{open_pscid}_{open_candid}_{visit}"
+            visit_name = "Time_1_MRI" if visit == "Initial_MRI" else visit
+            new_patient_name = f"{open_pscid}_{open_candid}_{visit_name}"
             new_patient_id = open_pscid
 
             if not extract_dir.is_absolute():
@@ -389,9 +443,9 @@ def main():
             if not dob_raw:
                 dob_raw = read_dob_from_dicom(dicom_dir)
 
-            dob_mm_yyyy = to_mm_yyyy(dob_raw)
-            acq_mm_yyyy = to_mm_yyyy(date_acq)
-            if not acq_mm_yyyy:
+            dob_yyyymm01 = to_yyyymm01(dob_raw)
+            acq_yyyymm01 = to_yyyymm01(date_acq)
+            if not acq_yyyymm01:
                 # Fallback: StudyDate from DICOM if summary date missing
                 try:
                     import pydicom
@@ -404,18 +458,18 @@ def main():
                             ds = pydicom.dcmread(
                                 str(path), stop_before_pixels=True
                             )
-                            acq_mm_yyyy = to_mm_yyyy(
+                            acq_yyyymm01 = to_yyyymm01(
                                 str(getattr(ds, "StudyDate", "") or "")
                             )
                             break
-                        if acq_mm_yyyy:
+                        if acq_yyyymm01:
                             break
                 except Exception:
                     pass
 
-            if not dob_mm_yyyy:
+            if not dob_yyyymm01:
                 warnings.append(f"{pscid}: missing/unparseable DoB")
-            if not acq_mm_yyyy:
+            if not acq_yyyymm01:
                 warnings.append(f"{pscid}: missing/unparseable DateAcquired")
 
             writer.writerow(
@@ -423,15 +477,15 @@ def main():
                     str(dicom_dir),
                     new_patient_name,
                     new_patient_id,
-                    dob_mm_yyyy,
-                    acq_mm_yyyy,
+                    dob_yyyymm01,
+                    acq_yyyymm01,
                 ]
             )
             written += 1
             if args.verbose:
                 print(
                     f"{pscid} -> {dicom_dir} | {new_patient_name} | "
-                    f"{new_patient_id} | {dob_mm_yyyy} | {acq_mm_yyyy}",
+                    f"{new_patient_id} | {dob_yyyymm01} | {acq_yyyymm01}",
                     file=sys.stderr,
                 )
 
