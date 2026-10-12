@@ -4,11 +4,11 @@
 
 =head1 NAME
 
-copy_tarchives_from_pscid_list.pl - untar DICOM tarchives for PSCIDs listed in a CSV
+untar_tarchives_from_pscid_list.pl - untar DICOM tarchives for PSCIDs listed in a CSV
 
 =head1 SYNOPSIS
 
-perl copy_tarchives_from_pscid_list.pl -profile prod /path/to/output_folder
+perl untar_tarchives_from_pscid_list.pl -profile prod /path/to/output_folder
     [-csv /path/to/pscid_list.csv] [-sourceroot name] [-dryrun]
 
 Required argument:

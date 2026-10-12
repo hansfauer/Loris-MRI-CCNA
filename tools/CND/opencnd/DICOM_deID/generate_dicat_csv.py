@@ -15,7 +15,7 @@ fields_to_zap_for_open_CCNA.xml, in this order:
 
 where:
     - DICOM_DIR         : path to the untarred DICOM study directory
-    - new_PatientName   : open_PSCID_open_CandID_Time_1_MRI for Initial_MRI;
+    - new_PatientName   : open_PSCID_open_CandID_Time1MRI for Initial_MRI;
                           otherwise open_PSCID_open_CandID_<Visit_label>
     - new_PatientID     : open_PSCID
     - PatientBirthDate  : original DoB truncated to YYYYMM01
@@ -475,7 +475,7 @@ def main():
                 continue
 
             open_pscid, open_candid = open_map[pscid]
-            visit_name = "Time_1_MRI" if visit == "Initial_MRI" else visit
+            visit_name = "Time1MRI" if visit == "Initial_MRI" else visit
             new_patient_name = f"{open_pscid}_{open_candid}_{visit_name}"
             new_patient_id = open_pscid
 

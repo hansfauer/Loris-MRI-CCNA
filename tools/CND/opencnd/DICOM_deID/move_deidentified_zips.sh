@@ -2,8 +2,8 @@
 # Move DICAT *_deidentified.zip outputs out of the working tarchive tree.
 set -euo pipefail
 
-SRC=/data/not_backed_up/tarchive
-DEST=/data/not_backed_up/tarchive_deID
+SRC=/data/not_backed_up/tarchive_release
+DEST=/data/not_backed_up/tarchive_release_deID
 
 dry_run=0
 limit=0
