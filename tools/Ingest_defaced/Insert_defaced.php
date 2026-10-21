@@ -16,7 +16,7 @@ declare(strict_types=1);
  */
 
 // Verify these installation-specific settings before either mode is run.
-const DEFACED_SCANS_ROOT_DIR = '/data/ccnaopen/data/bids_deface_test/';
+const DEFACED_SCANS_ROOT_DIR = '/data/ccnaopen/data/bids_deface/';
 const BIDS_ROOT_DIR = '/data/ccnaopen/data/assembly_bids/';
 const PROJECT = 'COMPASS-ND';
 const LORIS_ROOT_DIR = '/var/www/loris';
@@ -209,11 +209,12 @@ function ingestScan($db, array $plan, array $hashTypes): int
     }
     try {
         // Lock and recheck the original so a concurrent import cannot bypass the duplicate check.
-        $original = $db->pselectRow(
+        $lockedOriginalRows = iterator_to_array($db->pselect(
             'SELECT * FROM files WHERE FileID = :id FOR UPDATE',
             ['id' => $plan['original']['FileID']]
-        );
-        if ($original !== $plan['original']) {
+        ));
+        $original = $lockedOriginalRows[0] ?? null;
+        if ($original === null || $original !== $plan['original']) {
             throw new RuntimeException('Original record changed after preflight');
         }
         $existing = existingDefaced(
