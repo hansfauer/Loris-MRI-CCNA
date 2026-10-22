@@ -16,7 +16,8 @@ Workflow
     calculate a new BLAKE2b hash for the serialized scrubbed JSON for every
     linked FileID.
 5. Print counts. By default this is a dry run: no sidecar or database changes
-    are made. Use ``--commit`` only after reviewing the plan.
+    are made. ``--dry-run`` explicitly selects that mode. Use ``--commit`` only
+    after reviewing the plan.
 
 Examples
 ========
@@ -84,9 +85,14 @@ def parse_args() -> argparse.Namespace:
         "-p", "--profile", default="database_config.py",
         help="Python database profile in $LORIS_CONFIG/.loris_mri (default: database_config.py)",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--commit", action="store_true",
         help="Back up and write the UID scrubbing changes; default is dry-run only",
+    )
+    mode.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview changes without modifying JSON sidecars or database rows (default)",
     )
     parser.add_argument(
         "--json", dest="json_path",
