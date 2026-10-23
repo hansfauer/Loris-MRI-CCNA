@@ -58,6 +58,7 @@ import shutil
 import stat
 import sys
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -242,8 +243,19 @@ def build_plan(
             )
         defaced_ids = sorted(sidecars_by_defaced_id)
 
+    plan = plan_sidecars(database, type_ids, sidecars_by_defaced_id.values())
+    plan["defaced_count"] = len(defaced_ids)
+    return plan
+
+
+def plan_sidecars(
+    database: Any,
+    type_ids: dict[str, int],
+    sidecar_paths: Iterable[str],
+) -> dict[str, Any]:
+    """Plan JSON, UID-parameter, and JSON-hash updates for every FileID linked to these sidecars."""
     json_plans: dict[str, dict[str, Any]] = {}
-    for relative_path in sorted(set(sidecars_by_defaced_id.values())):
+    for relative_path in sorted(set(sidecar_paths)):
         sidecar, normalized = resolve_sidecar(relative_path)
         json_plans[normalized] = read_json_plan(sidecar, normalized)
 
@@ -290,7 +302,6 @@ def build_plan(
                 hash_inserts.append((file_id, type_ids[JSON_HASH_PARAMETER_NAME], plan["hash"], now))
 
     return {
-        "defaced_count": len(defaced_ids),
         "json_plans": json_plans,
         "uid_updates": uid_updates,
         "hash_updates": hash_updates,
